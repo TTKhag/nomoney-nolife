@@ -5,7 +5,7 @@ const NAV = { home: ['TRANG CHỦ', [['tq', 'TỔNG QUAN'], ['db', 'DASHBOARD']]
 const BD = [['ci', 'CHI ĐỊNH KỲ'], ['cp', 'CHI PHÁT SINH'], ['ti', 'THU ĐỊNH KỲ'], ['tp', 'THU PHÁT SINH'], ['lend', 'CHI VAY'], ['tv', 'THU VAY']];
 let S = load(), ui = { bd: 'ci', fcDate: addDays(today(), 30) };
 function load() { try { const o = JSON.parse(localStorage.getItem(KEY)); if (o && validBackup(o)) return o; } catch (e) { } return defState(); }
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { alert('Không thể lưu dữ liệu vào trình duyệt.'); } };
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { notify('Không thể lưu dữ liệu vào trình duyệt.', 'error', 'LƯU THẤT BẠI'); } };
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); }
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => new Intl.NumberFormat('vi-VN').format(Math.round(n)) + ' ₫';
@@ -16,6 +16,91 @@ const dLabel = d => `${d.type == 'bank' ? 'NH' : 'TM'} · ${d.name}${d.info ? ' 
 const accOpts = () => [['cash', 'Tiền mặt'], ...S.banks.map(b => [b.id, 'NH · ' + accName(b.id)])];
 const debtOpts = () => S.debts.map(d => [d.id, dLabel(d)]);
 const catOpts = t => S.cats[t].map(c => [c, c]);
+
+/* ---------- notification popups (replace native alert / confirm) ---------- */
+const NI = { success: 'M5 12.5l4.5 4.5L19 7', error: 'M6 6l12 12M18 6L6 18', warn: 'M12 5v9M12 18v1.5', info: 'M12 11v7M12 6v1.5', danger: 'M5 7h14M9 7V4.5h6V7M7 7l1 13h8l1-13M10 11v6M14 11v6' };
+const NT = { success: 'THÀNH CÔNG', error: 'LỖI', warn: 'LƯU Ý', info: 'THÔNG BÁO', danger: 'XÁC NHẬN XÓA' };
+const nQ = []; let nBusy = false, nTimer = 0;
+function enqueue(o) { if (nBusy) nQ.push(o); else nShow(o); }
+function nShow(o) {
+  nBusy = true; const d = document.getElementById('nt'); let done = false;
+  d.className = 'nt ' + o.type;
+  d.innerHTML = `<div class="nh"><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${NI[o.type]}"/></svg></span><h3>${esc(o.title)}</h3></div><div class="nb">${esc(o.msg)}</div><div class="row">${o.btns.map((b, i) => `<button type="button" class="${b.g ? 'g' : ''} ${b.dg ? 'dg' : ''}" data-i="${i}">${esc(b.t)}</button>`).join('')}</div>`;
+  const end = i => {
+    if (done) return; done = true; clearTimeout(nTimer); d.classList.add('out');
+    setTimeout(() => { d.close(); d.classList.remove('out'); nBusy = false; if (nQ.length) nShow(nQ.shift()); }, 170);
+    o.btns[i]?.fn?.();
+  };
+  d.onclick = e => { const b = e.target.closest('button'); if (b) end(+b.dataset.i); else if (e.target === d) end(0); };
+  d.oncancel = e => { e.preventDefault(); end(0); };
+  d.showModal();
+  if (o.type == 'success') nTimer = setTimeout(() => end(0), 2200);
+}
+function notify(msg, type = 'warn', title) { enqueue({ type, title: title || NT[type], msg, btns: [{ t: 'ĐÓNG' }] }); }
+function confirmBox(msg, yes, o = {}) { const type = o.type || 'danger'; enqueue({ type, title: o.title || NT[type], msg, btns: [{ t: 'HỦY', g: 1 }, { t: o.yes || 'XÓA', dg: type == 'danger', fn: yes }] }); }
+
+/* ---------- custom date picker (the native <input type=date> stays hidden as the source of truth) ---------- */
+const p2 = n => String(n).padStart(2, '0'), isoD = d => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+const WD = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+const SV = d => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+const CAL = SV('M4 6h16v14H4zM4 10h16M8 3v5M16 3v5'), CHL = SV('M15 5l-7 7 7 7'), CHR = SV('M9 5l7 7-7 7');
+let dp = null;
+function closeDp() { if (!dp) return; dp.pop.remove(); dp.w.classList.remove('open'); removeEventListener('resize', dp.pos); document.removeEventListener('scroll', dp.pos, true); document.removeEventListener('keydown', dp.key, true); dp = null; }
+function openDp(inp, w, b) {
+  const was = dp && dp.w === w; closeDd(); closeDp(); if (was) return;
+  const min = inp.min, max = inp.max, tdy = today(), clr = inp.dataset.clear == '1';
+  const inR = i => (!min || i >= min) && (!max || i <= max);
+  const v0 = /^\d{4}-\d\d-\d\d$/.test(inp.value) ? inp.value : max && tdy > max ? max : min && tdy < min ? min : tdy;
+  let y = +v0.slice(0, 4), m = +v0.slice(5, 7) - 1, mode = 'd', ys = y - 5, last = '';
+  const pop = document.createElement('div'); pop.className = 'dpp'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Chọn ngày');
+  (b.closest('dialog') || document.body).appendChild(pop);
+  const first = (yy, mm) => new Date(yy, mm, 1), lastD = (yy, mm) => new Date(yy, mm + 1, 0);
+  const mOk = (yy, mm) => (!min || isoD(lastD(yy, mm)) >= min) && (!max || isoD(first(yy, mm)) <= max);
+  const yOk = yy => (!min || `${yy}-12-31` >= min) && (!max || `${yy}-01-01` <= max);
+  const pos = () => {
+    const r = b.getBoundingClientRect(), pw = pop.offsetWidth, ph = pop.offsetHeight, W = innerWidth, H = innerHeight;
+    let t = r.bottom + 6; if (t + ph > H - 8) t = r.top - ph - 6 >= 8 ? r.top - ph - 6 : Math.max(8, H - ph - 8);
+    pop.style.left = Math.max(8, Math.min(r.left, W - pw - 8)) + 'px'; pop.style.top = t + 'px';
+  };
+  const draw = () => {
+    const sel = inp.value; let head, body;
+    const nav = (a, ok, lab, ic) => `<button type="button" class="dpn" data-a="${a}" aria-label="${lab}" ${ok ? '' : 'disabled'}>${ic}</button>`;
+    if (mode == 'd') {
+      const off = (first(y, m).getDay() + 6) % 7;
+      head = nav('prev', !min || isoD(first(y, m)) > min, 'Tháng trước', CHL) + `<div class="dpt"><button type="button" data-a="mo">THÁNG ${m + 1}</button><button type="button" data-a="yr">${y}</button></div>` + nav('next', !max || isoD(first(y, m + 1)) <= max, 'Tháng sau', CHR);
+      body = `<div class="dpw">${WD.map(x => `<span>${x}</span>`).join('')}</div><div class="dpd">${Array.from({ length: 42 }, (_, i) => { const dt = new Date(y, m, 1 - off + i), iso = isoD(dt); return `<button type="button" class="dc ${dt.getMonth() != m ? 'o' : ''} ${iso == sel ? 'sel' : ''} ${iso == tdy ? 'td' : ''}" data-d="${iso}" ${inR(iso) ? '' : 'disabled'}>${dt.getDate()}</button>`; }).join('')}</div>`;
+    } else if (mode == 'm') {
+      head = nav('prev', yOk(y - 1), 'Năm trước', CHL) + `<div class="dpt"><button type="button" data-a="yr">${y}</button></div>` + nav('next', yOk(y + 1), 'Năm sau', CHR);
+      body = `<div class="dpm">${Array.from({ length: 12 }, (_, i) => `<button type="button" class="dc ${sel.startsWith(`${y}-${p2(i + 1)}`) ? 'sel' : ''} ${tdy.startsWith(`${y}-${p2(i + 1)}`) ? 'td' : ''}" data-m="${i}" ${mOk(y, i) ? '' : 'disabled'}>THÁNG ${i + 1}</button>`).join('')}</div>`;
+    } else {
+      head = nav('prev', yOk(ys - 1), 'Trang trước', CHL) + `<div class="dpt"><span>${ys} – ${ys + 11}</span></div>` + nav('next', yOk(ys + 12), 'Trang sau', CHR);
+      body = `<div class="dpm">${Array.from({ length: 12 }, (_, i) => { const yy = ys + i; return `<button type="button" class="dc ${sel.startsWith(yy + '-') ? 'sel' : ''} ${tdy.startsWith(yy + '-') ? 'td' : ''}" data-y="${yy}" ${yOk(yy) ? '' : 'disabled'}>${yy}</button>`; }).join('')}</div>`;
+    }
+    pop.innerHTML = `<div class="dph">${head}</div><div class="dpg">${body}</div><div class="dpf"><button type="button" data-a="today" ${inR(tdy) ? '' : 'disabled'}>HÔM NAY</button><span></span>${clr ? '<button type="button" data-a="clear">XÓA</button>' : ''}<button type="button" data-a="close">ĐÓNG</button></div>`;
+    pos(); if (last) pop.querySelector(`[data-a="${last}"]:not([disabled])`)?.focus({ preventScroll: true });
+  };
+  const pick = v => { inp.value = v; closeDp(); inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); b.focus({ preventScroll: true }); };
+  pop.onclick = e => {
+    e.stopPropagation(); const t = e.target.closest('button'); if (!t || t.disabled) return; const d = t.dataset; last = d.a || '';
+    if (d.d) return pick(d.d);
+    if (d.m != null) { m = +d.m; mode = 'd'; last = ''; return draw(); }
+    if (d.y != null) { y = +d.y; if (!mOk(y, m)) { const k = Array.from({ length: 12 }, (_, i) => i).find(i => mOk(y, i)); if (k != null) m = k; } mode = 'm'; last = ''; return draw(); }
+    if (d.a == 'prev' || d.a == 'next') { const s = d.a == 'prev' ? -1 : 1; if (mode == 'd') { const n = new Date(y, m + s, 1); y = n.getFullYear(); m = n.getMonth(); } else if (mode == 'm') y += s; else ys += 12 * s; }
+    else if (d.a == 'mo') mode = mode == 'm' ? 'd' : 'm'; else if (d.a == 'yr') { mode = mode == 'y' ? 'd' : 'y'; ys = y - 5; }
+    else if (d.a == 'today') return pick(tdy); else if (d.a == 'clear') return pick(''); else if (d.a == 'close') { closeDp(); return b.focus({ preventScroll: true }); }
+    draw();
+  };
+  dp = { pop, w, pos, key: e => { if (e.key == 'Escape') { e.preventDefault(); e.stopPropagation(); closeDp(); b.focus({ preventScroll: true }); } } };
+  addEventListener('resize', pos); document.addEventListener('scroll', pos, true); document.addEventListener('keydown', dp.key, true);
+  w.classList.add('open'); draw(); pop.querySelector('.dc.sel:not(.o),.dc.td:not(.o)')?.focus({ preventScroll: true });
+}
+document.addEventListener('click', closeDp); document.addEventListener('close', closeDp, true);
+
+/* ---------- homepage clock ---------- */
+const WDN = ['CHỦ NHẬT', 'THỨ HAI', 'THỨ BA', 'THỨ TƯ', 'THỨ NĂM', 'THỨ SÁU', 'THỨ BẢY'];
+const clk = (d = new Date()) => ({ wd: WDN[d.getDay()], dt: `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()}`, hm: `${p2(d.getHours())}:${p2(d.getMinutes())}`, s: p2(d.getSeconds()) });
+const clockHtml = () => { const c = clk(); return `<div class="clk" role="timer" aria-label="Ngày và giờ hiện tại"><div class="cdt"><small data-ck="wd">${c.wd}</small><b data-ck="dt">${c.dt}</b></div><div class="ctm"><span data-ck="hm">${c.hm}</span><i>:</i><em data-ck="s">${c.s}</em></div></div>`; };
+function tickClock() { const c = clk(); document.querySelectorAll('.clk [data-ck]').forEach(e => { const v = c[e.dataset.ck]; if (e.textContent !== v) e.textContent = v; }); setTimeout(tickClock, 1005 - Date.now() % 1000); }
 
 /* ---------- state mutation with validation (rollback on any error) ---------- */
 function mutate(fn) {
@@ -28,7 +113,7 @@ function mutate(fn) {
 function ask(title, fields, cb, vals = {}) {
   const dlg = document.getElementById('dlg');
   const val = f => vals[f.n] ?? f.v ?? '';
-  dlg.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<div data-f="${f.n}"><label>${f.l}</label>${f.t == 'select' ? `<select name="${f.n}">${f.o.map(([v, l]) => `<option value="${esc(v)}" ${v == val(f) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>` : f.t == 'textarea' ? `<textarea name="${f.n}" rows="2">${esc(val(f))}</textarea>` : `<input name="${f.n}" type="${f.t || 'text'}" value="${esc(val(f))}" ${f.t == 'number' ? 'min="0" step="any"' : ''} ${f.max ? 'max="' + f.max + '"' : ''}>`}</div>`).join('')}
+  dlg.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<div data-f="${f.n}"><label>${f.l}</label>${f.t == 'select' ? `<select name="${f.n}">${f.o.map(([v, l]) => `<option value="${esc(v)}" ${v == val(f) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>` : f.t == 'textarea' ? `<textarea name="${f.n}" rows="2">${esc(val(f))}</textarea>` : `<input name="${f.n}" type="${f.t || 'text'}" value="${esc(val(f))}" ${f.t == 'number' ? 'min="0" step="any"' : ''} ${f.max ? 'max="' + f.max + '"' : ''} ${f.t == 'date' && !f.req ? 'data-clear="1"' : ''}>`}</div>`).join('')}
   <div class="err"></div><div class="row"><button type="button" class="g" id="x">HỦY</button><button>LƯU</button></div></form>`;
   enhance(dlg);
   const form = dlg.querySelector('form'), get = () => Object.fromEntries(fields.map(f => [f.n, f.t == 'number' ? (form[f.n].value === '' ? NaN : +form[f.n].value) : form[f.n].value.trim()]));
@@ -54,6 +139,14 @@ const KN = { ci: 'Chi định kỳ', cp: 'Chi phát sinh', ti: 'Thu định kỳ
 /* custom dropdowns: the native <select> stays hidden as the source of truth */
 const closeDd = () => document.querySelectorAll('.dd.open').forEach(d => d.classList.remove('open'));
 function enhance(root) {
+  closeDp();
+  root.querySelectorAll('input[type=date]:not([data-dp])').forEach(inp => {
+    inp.dataset.dp = 1; inp.classList.add('dpin'); inp.tabIndex = -1;
+    const w = document.createElement('div'); w.className = 'dp'; w.innerHTML = `<button type="button" class="dpb" aria-haspopup="dialog"><span class="dpv"></span><span class="ic">${CAL}</span></button>`; inp.after(w);
+    const b = w.firstChild, v = b.firstChild, sync = () => { v.textContent = inp.value ? dmy(inp.value) : 'CHỌN NGÀY'; v.classList.toggle('ph', !inp.value); };
+    sync(); inp.addEventListener('change', sync);
+    b.onclick = e => { e.stopPropagation(); e.preventDefault(); openDp(inp, w, b); };
+  });
   root.querySelectorAll('select:not([data-dd])').forEach(sel => {
     sel.dataset.dd = 1; sel.classList.add('hid');
     const w = document.createElement('div'); w.className = 'dd'; w.innerHTML = '<button type="button" class="ddb"></button><ul></ul>'; sel.after(w);
@@ -86,9 +179,9 @@ function debtAcctFields(sh = () => true) {
 const newDebt = v => ({ id: uid(), type: v.dtype, name: v.dtype == 'bank' && v.bank != 'Khác' ? v.bank : v.dname, info: v.info, rate: v.rate || 0, extra: 0 });
 function txForm(kind, id) {
   const old = id && S.tx.find(t => t.id == id); const f = txFields(kind);
-  if (kind == 'collect' && !f[0].o.length && !old) return alert('Chưa có khoản cho vay nào còn phải thu.');
-  if ((kind == 'repay' || ((kind == 'ci' || kind == 'cp') && false)) && !S.debts.length) return alert('Hãy tạo tài khoản nợ trước (TÀI CHÍNH › NỢ).');
-  if ((kind == 'ci' || kind == 'cp') && !S.cats.exp.length || (kind == 'ti' || kind == 'tp') && !S.cats.inc.length) return alert('Hãy tạo danh mục trong THIẾT LẬP › DANH MỤC.');
+  if (kind == 'collect' && !f[0].o.length && !old) return notify('Chưa có khoản cho vay nào còn phải thu.', 'warn', 'CHƯA THỂ THỰC HIỆN');
+  if ((kind == 'repay' || ((kind == 'ci' || kind == 'cp') && false)) && !S.debts.length) return notify('Hãy tạo tài khoản nợ trước (TÀI CHÍNH › NỢ).', 'warn', 'CHƯA THỂ THỰC HIỆN');
+  if ((kind == 'ci' || kind == 'cp') && !S.cats.exp.length || (kind == 'ti' || kind == 'tp') && !S.cats.inc.length) return notify('Hãy tạo danh mục trong THIẾT LẬP › DANH MỤC.', 'warn', 'CHƯA THỂ THỰC HIỆN');
   const t = { ci: 'CHI ĐỊNH KỲ', cp: 'CHI PHÁT SINH', ti: 'THU ĐỊNH KỲ', tp: 'THU PHÁT SINH', lend: 'CHI VAY', collect: 'THU TIỀN CHO VAY', borrow: 'NHẬN TIỀN VAY', repay: 'TRẢ NỢ' }[kind];
   ask((old ? 'SỬA · ' : 'THÊM · ') + t, f, v => {
     if (v.date && v.date > today()) return 'Không được nhập ngày trong tương lai (dùng DỰ KIẾN).';
@@ -98,7 +191,7 @@ function txForm(kind, id) {
     return mutate(c => { if (old) delTx(c, id); if (kind == 'borrow' && v.debt == 'new') { const d = newDebt(v); c.debts.push(d); x.debt = d.id; } addTx(c, x); });
   }, old ? { ...old, fee: old.fee } : {});
 }
-const delT = id => { if (confirm('Xóa giao dịch này? Các số dư và nợ liên quan sẽ được tính lại.')) { const e = mutate(c => delTx(c, id)); if (e) alert(e); } };
+const delT = id => confirmBox('Xóa giao dịch này? Các số dư và nợ liên quan sẽ được tính lại.', () => { const e = mutate(c => delTx(c, id)); if (e) notify(e, 'error'); }, { title: 'XÓA GIAO DỊCH' });
 const txSrc = t => t.src == 'debt' ? `<span class="tag">NỢ</span> ${esc(dLabel(S.debts.find(d => d.id == t.debt) || { type: 'cash', name: '(đã xóa)', id: '    ' }))}` : (t.kind == 'ci' || t.kind == 'cp') ? `<span class="tag">DƯ</span> ${esc(accName(t.acc))}` : esc(accName(t.acc));
 const acts = t => btn('Sửa', `txForm('${t.kind}','${t.id}')`) + ' ' + btn('Xóa', `delT('${t.id}')`);
 const byDate = a => [...a].sort((x, y) => y.date.localeCompare(x.date));
@@ -110,9 +203,9 @@ function pgTq() {
   const hr = new Date().getHours(), g = hr < 11 ? 'Chào buổi sáng' : hr < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
   const recent = byDate(S.tx).slice(0, 7), inc = t => ['ti', 'tp', 'collect', 'borrow'].includes(t.kind);
   const owed = sum(S.tx.filter(t => t.kind == 'lend'), t => lendLeft(S, t.id));
-  return `<section class="cover" style="${cv ? `background-image:url(${cv})` : ''}">${cv ? '' : deco}</section>
+  return `<section class="cover" style="${cv ? `background-image:url(${cv})` : ''}">${cv ? '' : deco}${clockHtml()}</section>
   <div class="prof"><div class="avatar"><div>${av ? `<img src="${av}" alt="">` : esc((pr.name || 'N')[0].toUpperCase())}</div></div>
-  <div class="meta"><h1>${g}${pr.name ? ', ' + esc(pr.name) : ''}</h1><p>${esc(pr.note) || 'Cập nhật ảnh đại diện, ảnh bìa và ghi chú trong THIẾT LẬP › CÁ NHÂN.'}</p></div></div>
+  <div class="meta"><h1>${g}${pr.name ? ', ' + esc(pr.name) : ''}</h1>${pr.note ? `<p>${esc(pr.note)}</p>` : ''}</div></div>
   <div class="hero"><small>TÀI SẢN RÒNG</small><div class="big">${money(c.net)}</div></div>
   ${p.has ? `<div class="sec">TÀI SẢN RÒNG DỰ KIẾN · ${dmy(ui.fcDate)}: <b>${money(p.net)}</b></div>` : ''}
   <div class="split"><div><h2>TỔNG QUAN</h2><div class="grid">${kpi('TỔNG DƯ', money(c.total))}${kpi('TỔNG NỢ THỰC TẾ', money(c.da))}${kpi('TIỀN MẶT', money(c.cash))}${kpi('NGÂN HÀNG', money(c.bank))}</div>
@@ -160,8 +253,8 @@ function pgNo() {
 const addDebt = () => ask('THÊM TÀI KHOẢN NỢ', debtAcctFields(), v => mutate(c => c.debts.push(newDebt(v))));
 function editDebt(id) { const d = S.debts.find(d => d.id == id); ask('SỬA TÀI KHOẢN NỢ', [{ n: 'dname', l: 'TÊN' }, { n: 'info', l: 'THÔNG TIN' }, { n: 'rate', l: 'LÃI SUẤT (%/NĂM)', t: 'number' }], v => mutate(c => { const x = c.debts.find(d => d.id == id); x.name = v.dname || x.name; x.info = v.info; x.rate = v.rate || 0; }), { dname: d.name, info: d.info, rate: d.rate }); }
 function delDebt(id) {
-  if (S.tx.some(t => t.debt == id) || S.fc.some(f => f.debt == id)) return alert('Tài khoản nợ đã có giao dịch tham chiếu nên không thể xóa (tránh sai lệch lịch sử).');
-  if (confirm('Xóa tài khoản nợ này?')) mutate(c => c.debts = c.debts.filter(d => d.id != id));
+  if (S.tx.some(t => t.debt == id) || S.fc.some(f => f.debt == id)) return notify('Tài khoản nợ đã có giao dịch tham chiếu nên không thể xóa (tránh sai lệch lịch sử).', 'warn', 'KHÔNG THỂ XÓA');
+  confirmBox('Xóa tài khoản nợ này?', () => { const e = mutate(c => c.debts = c.debts.filter(d => d.id != id)); if (e) notify(e, 'error'); }, { title: 'XÓA TÀI KHOẢN NỢ' });
 }
 function editActual(id) {
   const x = calc(S).debts.find(x => x.d.id == id);
@@ -173,7 +266,7 @@ function calcInt(id) {
     if (v.to < v.from) return 'Ngày kết thúc phải sau ngày bắt đầu.';
     const i = interest(S, id, v.rate, v.from, v.to), p = calc(S).prin[id];
     const warn = d.lastTo && v.from <= d.lastTo ? `\n⚠ Kỳ này trùng với lần ghi lãi trước (đến ${dmy(d.lastTo)}).` : '';
-    if (confirm(`Gốc: ${fmt(p)}\nLãi kỳ này: ${fmt(i)}\nNợ thực tế sau khi ghi: ${fmt(p + (d.extra || 0) + i)}${warn}\n\nGhi nhận lãi vào nợ thực tế?`)) return mutate(c => { const x = c.debts.find(d => d.id == id); x.rate = v.rate; x.extra = (x.extra || 0) + i; x.lastTo = v.to; });
+    confirmBox(`Gốc: ${fmt(p)}\nLãi kỳ này: ${fmt(i)}\nNợ thực tế sau khi ghi: ${fmt(p + (d.extra || 0) + i)}${warn}\n\nGhi nhận lãi vào nợ thực tế?`, () => { const e = mutate(c => { const x = c.debts.find(d => d.id == id); x.rate = v.rate; x.extra = (x.extra || 0) + i; x.lastTo = v.to; }); if (e) notify(e, 'error'); }, { type: warn ? 'warn' : 'info', title: 'GHI NHẬN LÃI', yes: 'GHI NHẬN' });
   }, { rate: d.rate, to: today() });
 }
 function pgBd() {
@@ -205,7 +298,7 @@ const editCash = () => ask('SỐ DƯ TIỀN MẶT BAN ĐẦU', [{ n: 'v', l: 'S�
 const bankFields = () => [{ n: 'bank', l: 'NGÂN HÀNG', t: 'select', o: BANKS.map(b => [b, b]) }, { n: 'other', l: 'TÊN NGÂN HÀNG KHÁC', show: v => v.bank == 'Khác', req: 1 }, { n: 'note', l: 'GHI CHÚ (SỐ TK, CHI NHÁNH...)' }, { n: 'open', l: 'SỐ DƯ BAN ĐẦU (₫)', t: 'number' }];
 const addBank = () => ask('THÊM TÀI KHOẢN NGÂN HÀNG', bankFields(), v => mutate(c => c.banks.push({ id: uid(), name: v.bank == 'Khác' ? v.other : v.bank, note: v.note, open: v.open || 0 })));
 function editBank(id) { const b = S.banks.find(b => b.id == id); ask('SỬA TÀI KHOẢN', [{ n: 'name', l: 'TÊN', req: 1 }, { n: 'note', l: 'GHI CHÚ' }, { n: 'open', l: 'SỐ DƯ BAN ĐẦU (₫)', t: 'number' }], v => mutate(c => Object.assign(c.banks.find(b => b.id == id), { name: v.name, note: v.note, open: v.open || 0 })), b); }
-function delBank(id) { if (S.tx.some(t => t.acc == id) || S.fc.some(f => f.acc == id)) return alert('Tài khoản đã có giao dịch tham chiếu nên không thể xóa.'); if (confirm('Xóa tài khoản này?')) mutate(c => c.banks = c.banks.filter(b => b.id != id)); }
+function delBank(id) { if (S.tx.some(t => t.acc == id) || S.fc.some(f => f.acc == id)) return notify('Tài khoản đã có giao dịch tham chiếu nên không thể xóa.', 'warn', 'KHÔNG THỂ XÓA'); confirmBox('Xóa tài khoản này?', () => { const e = mutate(c => c.banks = c.banks.filter(b => b.id != id)); if (e) notify(e, 'error'); }, { title: 'XÓA TÀI KHOẢN' }); }
 function hist(id) {
   const L = byDate(S.tx.filter(t => t.acc == id || (id == 'cash' && t.kind == 'lend'))), sign = t => (['ci', 'cp', 'lend', 'repay'].includes(t.kind) ? (t.src == 'debt' ? 0 : -1) : 1) * t.amount, nm = { ci: 'Chi định kỳ', cp: 'Chi phát sinh', ti: 'Thu định kỳ', tp: 'Thu phát sinh', lend: 'Cho vay', collect: 'Thu cho vay', borrow: 'Nhận vay', repay: 'Trả nợ' };
   show('LỊCH SỬ · ' + esc(accName(id)), tbl(['NGÀY', 'LOẠI', '#BIẾN ĐỘNG'], L.map(t => tr([dmy(t.date), nm[t.kind] + (t.cat ? ' · ' + esc(t.cat) : ''), '#' + money(sign(t))]))));
@@ -227,7 +320,7 @@ function pgFcBd() {
 }
 function fcForm(type, id) {
   const old = id && S.fc.find(f => f.id == id), chi = type == 'chi';
-  if (!S.cats[chi ? 'exp' : 'inc'].length) return alert('Hãy tạo danh mục trong THIẾT LẬP.');
+  if (!S.cats[chi ? 'exp' : 'inc'].length) return notify('Hãy tạo danh mục trong THIẾT LẬP.', 'warn', 'CHƯA THỂ THỰC HIỆN');
   const f = [{ n: 'date', l: 'NGÀY', t: 'date', req: 1, v: ui.fcDate }, { n: 'amount', l: 'SỐ TIỀN (₫)', t: 'number', req: 1 }, { n: 'cat', l: 'DANH MỤC', t: 'select', o: catOpts(chi ? 'exp' : 'inc') }, { n: 'desc', l: 'MÔ TẢ' },
   ...(chi ? [{ n: 'src', l: 'NGUỒN TIỀN', t: 'select', o: [['bal', 'DƯ'], ['debt', 'NỢ']] }, { n: 'acc', l: 'TÀI KHOẢN DƯ', t: 'select', o: accOpts(), show: v => v.src == 'bal' }, { n: 'debt', l: 'TÀI KHOẢN NỢ', t: 'select', o: debtOpts(), show: v => v.src == 'debt', req: 1 }] : [{ n: 'acc', l: 'CỘNG VÀO', t: 'select', o: accOpts() }])];
   ask((old ? 'SỬA · ' : 'THÊM · ') + (chi ? 'CHI DỰ KIẾN' : 'THU DỰ KIẾN'), f, v => {
@@ -236,13 +329,13 @@ function fcForm(type, id) {
     return mutate(c => { c.fc = c.fc.filter(y => y.id != x.id); c.fc.push(x); });
   }, old || {});
 }
-const delFc = id => confirm('Xóa dự kiến này? (Không ảnh hưởng dữ liệu thực tế)') && mutate(c => c.fc = c.fc.filter(f => f.id != id));
+const delFc = id => confirmBox('Xóa dự kiến này? (Không ảnh hưởng dữ liệu thực tế)', () => { const e = mutate(c => c.fc = c.fc.filter(f => f.id != id)); if (e) notify(e, 'error'); }, { title: 'XÓA DỰ KIẾN' });
 /* ---------- settings ---------- */
 function pgDm() {
   const box = (t, l) => `<div><h2>${l}</h2><div class="bar"><input id="nc-${t}" placeholder="Tên danh mục mới" style="flex:1">${btn('THÊM', `addCat('${t}')`, '')}</div>${tbl(['DANH MỤC', ''], S.cats[t].map((c, i) => tr([esc(c), btn('Xóa', `delCat('${t}',${i})`)])), 'Chưa có danh mục.')}</div>`;
   return `<div class="cols">${box('exp', 'DANH MỤC CHI')}${box('inc', 'DANH MỤC THU')}</div><p class="empty">Xóa danh mục không làm thay đổi các giao dịch cũ (tên danh mục được giữ trong lịch sử).</p>`;
 }
-const addCat = t => { const v = document.getElementById('nc-' + t).value.trim(); if (!v) return; if (S.cats[t].some(c => c.toLowerCase() == v.toLowerCase())) return alert('Danh mục đã tồn tại.'); S.cats[t].push(v); save(); render(); };
+const addCat = t => { const v = document.getElementById('nc-' + t).value.trim(); if (!v) return; if (S.cats[t].some(c => c.toLowerCase() == v.toLowerCase())) return notify('Danh mục đã tồn tại.', 'warn', 'TRÙNG DANH MỤC'); S.cats[t].push(v); save(); render(); };
 const delCat = (t, i) => { S.cats[t].splice(i, 1); save(); render(); };
 const pgCn = () => { const pr = S.profile, cv = safeImg(pr.cover), av = safeImg(pr.avatar); return `<div class="cols"><div>
   <h2>ẢNH BÌA</h2><div class="cover" style="height:150px;${cv ? `background-image:url(${cv})` : ''}">${cv ? '' : deco}</div>
@@ -250,10 +343,10 @@ const pgCn = () => { const pr = S.profile, cv = safeImg(pr.cover), av = safeImg(
   <h2>ẢNH ĐẠI DIỆN</h2><div class="avatar"><div>${av ? `<img src="${av}" alt="">` : esc((pr.name || 'N')[0].toUpperCase())}</div></div>
   <div class="bar" style="margin-top:14px"><label class="btn">TẢI ẢNH ĐẠI DIỆN<input type="file" accept="image/*" hidden onchange="upImg(this,'avatar',320,320)"></label>${av ? btn('GỠ ẢNH', "rmImg('avatar')") : ''}</div></div>
   <div><h2>THÔNG TIN</h2><label>TÊN HIỂN THỊ</label><input id="pn" value="${esc(pr.name)}"><label>GHI CHÚ</label><textarea id="pt" rows="4">${esc(pr.note)}</textarea><div class="row" style="justify-content:flex-start">${btn('LƯU', 'saveProfile()', '')}</div></div></div>`; };
-const saveProfile = () => { S.profile.name = pn.value.trim(); S.profile.note = pt.value.trim(); save(); render(); };
+const saveProfile = () => { S.profile.name = pn.value.trim(); S.profile.note = pt.value.trim(); save(); render(); notify('Đã lưu thông tin cá nhân.', 'success'); };
 function upImg(inp, key, w, h) {
-  const f = inp.files[0]; inp.value = ''; if (!f) return; if (!/^image\//.test(f.type)) return alert('Vui lòng chọn file ảnh.');
-  const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const k = Math.max(w / im.width, h / im.height), dw = im.width * k, dh = im.height * k; c.getContext('2d').drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh); S.profile[key] = c.toDataURL('image/jpeg', .82); save(); render(); }; im.onerror = () => alert('Không đọc được ảnh.'); im.src = r.result; };
+  const f = inp.files[0]; inp.value = ''; if (!f) return; if (!/^image\//.test(f.type)) return notify('Vui lòng chọn file ảnh.', 'warn', 'FILE KHÔNG HỢP LỆ');
+  const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const k = Math.max(w / im.width, h / im.height), dw = im.width * k, dh = im.height * k; c.getContext('2d').drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh); S.profile[key] = c.toDataURL('image/jpeg', .82); save(); render(); }; im.onerror = () => notify('Không đọc được ảnh.', 'error'); im.src = r.result; };
   r.readAsDataURL(f);
 }
 const rmImg = key => { delete S.profile[key]; save(); render(); };
@@ -261,7 +354,7 @@ const pgSl = () => `<div class="bar">${btn('TẢI BẢN SAO LƯU (.json)', 'back
 function backup() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })); a.download = `nomoney-nolife-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1e3); }
 function restore(inp) {
   const f = inp.files[0]; inp.value = ''; if (!f) return; const r = new FileReader();
-  r.onload = () => { let o; try { o = JSON.parse(r.result); } catch (e) { return alert('File không phải JSON hợp lệ.'); } if (!validBackup(o)) return alert('Bản sao lưu không hợp lệ hoặc không đầy đủ. Dữ liệu hiện tại được giữ nguyên.'); if (confirm('Khôi phục sẽ THAY THẾ toàn bộ dữ liệu hiện tại. Tiếp tục?')) { S = o; save(); render(); } };
+  r.onload = () => { let o; try { o = JSON.parse(r.result); } catch (e) { return notify('File không phải JSON hợp lệ.', 'error', 'KHÔI PHỤC THẤT BẠI'); } if (!validBackup(o)) return notify('Bản sao lưu không hợp lệ hoặc không đầy đủ. Dữ liệu hiện tại được giữ nguyên.', 'error', 'KHÔI PHỤC THẤT BẠI'); confirmBox('Khôi phục sẽ THAY THẾ toàn bộ dữ liệu hiện tại. Tiếp tục?', () => { S = o; save(); render(); notify('Đã khôi phục dữ liệu từ bản sao lưu.', 'success'); }, { type: 'warn', title: 'KHÔI PHỤC DỮ LIỆU', yes: 'KHÔI PHỤC' }); };
   r.readAsText(f);
 }
 /* ---------- router ---------- */
@@ -270,9 +363,9 @@ function render() {
   let [m, s] = location.hash.slice(1).split('/'); if (!PG[m + '/' + s]) { m = 'home'; s = 'tq'; }
   const p = S.profile, av = safeImg(p.avatar);
   side.innerHTML = `<div class="logo">NOMONEY<i>-</i>NOLIFE</div><div class="me"><div class="av">${av ? `<img src="${av}" alt="">` : esc((p.name || 'N')[0].toUpperCase())}</div>${esc((p.name || 'NGƯỜI DÙNG').toUpperCase())}</div>` +
-    Object.entries(NAV).map(([k, [l, subs]]) => `<div class="gl">${l}</div>` + subs.map(([a, b]) => `<a class="lk ${k == m && a == s ? 'on' : ''}" href="#${k}/${a}"><span>${b}</span></a>`).join('')).join('') + '<div class="slashes"></div>';
+    Object.entries(NAV).map(([k, [l, subs]]) => `<div class="grp ${k == m ? 'on' : ''}"><div class="gl">${l}</div><div class="tabs">` + subs.map(([a, b]) => `<a class="lk ${k == m && a == s ? 'on' : ''}" href="#${k}/${a}" ${k == m && a == s ? 'aria-current="page"' : ''}><span>${b}</span></a>`).join('') + '</div></div>').join('') + '<div class="slashes"></div>';
   app.innerHTML = PG[m + '/' + s](); enhance(app);
   const key = m + s + (m == 'fin' && s == 'bd' ? ui.bd : '');
   if (key != ui.key) { ui.key = key; app.classList.remove('in'); void app.offsetWidth; app.classList.add('in'); scrollTo(0, 0); }
 }
-addEventListener('hashchange', render); render();
+addEventListener('hashchange', render); render(); tickClock();
