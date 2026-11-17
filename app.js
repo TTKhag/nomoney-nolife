@@ -30,6 +30,7 @@ function ask(title, fields, cb, vals = {}) {
   const val = f => vals[f.n] ?? f.v ?? '';
   dlg.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<div data-f="${f.n}"><label>${f.l}</label>${f.t == 'select' ? `<select name="${f.n}">${f.o.map(([v, l]) => `<option value="${esc(v)}" ${v == val(f) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>` : f.t == 'textarea' ? `<textarea name="${f.n}" rows="2">${esc(val(f))}</textarea>` : `<input name="${f.n}" type="${f.t || 'text'}" value="${esc(val(f))}" ${f.t == 'number' ? 'min="0" step="any"' : ''} ${f.max ? 'max="' + f.max + '"' : ''}>`}</div>`).join('')}
   <div class="err"></div><div class="row"><button type="button" class="g" id="x">HỦY</button><button>LƯU</button></div></form>`;
+  enhance(dlg);
   const form = dlg.querySelector('form'), get = () => Object.fromEntries(fields.map(f => [f.n, f.t == 'number' ? (form[f.n].value === '' ? NaN : +form[f.n].value) : form[f.n].value.trim()]));
   const vis = () => { const v = get(); fields.forEach(f => { dlg.querySelector(`[data-f="${f.n}"]`).style.display = !f.show || f.show(v) ? '' : 'none'; }); };
   form.oninput = form.onchange = vis; vis();
@@ -46,7 +47,24 @@ const show = (title, html) => { const d = document.getElementById('dlg'); d.inne
 const tbl = (h, rows, empty = 'Chưa có dữ liệu.') => rows.length ? `<div class="wrap"><table><tr>${h.map(x => `<th class="${x[0] == '#' ? 'n' : ''}">${x.replace(/^#/, '')}</th>`).join('')}</tr>${rows.join('')}</table></div>` : `<div class="empty">${empty}</div>`;
 const tr = (cells, cls = '') => `<tr class="${cls}">${cells.map((c, i) => `<td class="${/^<span class="(neg)?">[-\d]/.test(c) || /^#/.test(c) ? 'n' : ''}">${c.replace?.(/^#/, '') ?? c}</td>`).join('')}</tr>`;
 const btn = (t, fn, cls = 'g s') => `<button class="${cls}" onclick="${fn}">${t}</button>`;
-const kpi = (l, v) => `<div class="k"><small>${l}</small><b>${v}</b></div>`;
+const ico = d => `<span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d == 'in' ? 'M6 6l12 12M18 9v9H9' : 'M6 18L18 6M9 6h9v9'}"/></svg></span>`;
+const kpi = (l, v, i) => `<div class="k ${i ? 'i' : ''}">${i ? ico(i) : ''}<small>${l}</small><b>${v}</b></div>`;
+const safeImg = u => /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(u || '') ? u : '';
+const KN = { ci: 'Chi định kỳ', cp: 'Chi phát sinh', ti: 'Thu định kỳ', tp: 'Thu phát sinh', lend: 'Cho vay', collect: 'Thu cho vay', borrow: 'Nhận vay', repay: 'Trả nợ' };
+/* custom dropdowns: the native <select> stays hidden as the source of truth */
+const closeDd = () => document.querySelectorAll('.dd.open').forEach(d => d.classList.remove('open'));
+function enhance(root) {
+  root.querySelectorAll('select:not([data-dd])').forEach(sel => {
+    sel.dataset.dd = 1; sel.classList.add('hid');
+    const w = document.createElement('div'); w.className = 'dd'; w.innerHTML = '<button type="button" class="ddb"></button><ul></ul>'; sel.after(w);
+    const b = w.firstChild, ul = w.lastChild;
+    const sync = () => { b.textContent = sel.selectedOptions[0]?.textContent || '—'; ul.innerHTML = [...sel.options].map(o => `<li data-v="${esc(o.value)}" class="${o.selected ? 'on' : ''}">${esc(o.textContent)}</li>`).join(''); };
+    sync();
+    b.onclick = e => { e.stopPropagation(); e.preventDefault(); const o = w.classList.contains('open'); closeDd(); if (!o) w.classList.add('open'); };
+    ul.onclick = e => { const li = e.target.closest('li'); if (!li) return; sel.value = li.dataset.v; sync(); w.classList.remove('open'); sel.dispatchEvent(new Event('change', { bubbles: true })); };
+  });
+}
+document.addEventListener('click', closeDd);
 
 /* ---------- transactions ---------- */
 function txFields(kind) {
@@ -86,30 +104,46 @@ const acts = t => btn('Sửa', `txForm('${t.kind}','${t.id}')`) + ' ' + btn('Xó
 const byDate = a => [...a].sort((x, y) => y.date.localeCompare(x.date));
 
 /* ---------- pages ---------- */
+const deco = `<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="30"/><circle cx="50" cy="50" r="12"/><path d="M50 0v24M50 76v24M0 50h24M76 50h24"/></svg>`;
 function pgTq() {
-  const c = calc(S), p = project(S, ui.fcDate);
+  const c = calc(S), p = project(S, ui.fcDate), pr = S.profile, cv = safeImg(pr.cover), av = safeImg(pr.avatar);
   const hr = new Date().getHours(), g = hr < 11 ? 'Chào buổi sáng' : hr < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
-  return `<h2>${g}${S.profile.name ? ', ' + esc(S.profile.name) : ''}</h2>
+  const recent = byDate(S.tx).slice(0, 7), inc = t => ['ti', 'tp', 'collect', 'borrow'].includes(t.kind);
+  const owed = sum(S.tx.filter(t => t.kind == 'lend'), t => lendLeft(S, t.id));
+  return `<section class="cover" style="${cv ? `background-image:url(${cv})` : ''}">${cv ? '' : deco}</section>
+  <div class="prof"><div class="avatar"><div>${av ? `<img src="${av}" alt="">` : esc((pr.name || 'N')[0].toUpperCase())}</div></div>
+  <div class="meta"><h1>${g}${pr.name ? ', ' + esc(pr.name) : ''}</h1><p>${esc(pr.note) || 'Cập nhật ảnh đại diện, ảnh bìa và ghi chú trong THIẾT LẬP › CÁ NHÂN.'}</p></div></div>
   <div class="hero"><small>TÀI SẢN RÒNG</small><div class="big">${money(c.net)}</div></div>
   ${p.has ? `<div class="sec">TÀI SẢN RÒNG DỰ KIẾN · ${dmy(ui.fcDate)}: <b>${money(p.net)}</b></div>` : ''}
-  <div class="grid">${kpi('TỔNG DƯ', money(c.total))}${kpi('TỔNG NỢ THỰC TẾ', money(c.da))}${kpi('TIỀN MẶT', money(c.cash))}${kpi('NGÂN HÀNG', money(c.bank))}</div>
-  <h2>TỔNG NỢ</h2><div class="grid">${kpi('NỢ GỐC', money(c.dp))}${kpi('LÃI & ĐIỀU CHỈNH', money(c.di))}${kpi('NỢ THỰC TẾ', money(c.da))}${kpi('CHO VAY CÒN PHẢI THU', money(sum(S.tx.filter(t => t.kind == 'lend'), t => lendLeft(S, t.id))))}</div>`;
+  <div class="split"><div><h2>TỔNG QUAN</h2><div class="grid">${kpi('TỔNG DƯ', money(c.total))}${kpi('TỔNG NỢ THỰC TẾ', money(c.da))}${kpi('TIỀN MẶT', money(c.cash))}${kpi('NGÂN HÀNG', money(c.bank))}</div>
+  <h2>TỔNG NỢ</h2><div class="grid">${kpi('NỢ GỐC', money(c.dp))}${kpi('LÃI & ĐIỀU CHỈNH', money(c.di))}${kpi('NỢ THỰC TẾ', money(c.da))}${kpi('CHO VAY CÒN PHẢI THU', money(owed))}</div></div>
+  <div><h2>GẦN ĐÂY</h2>${tbl(['NGÀY', 'LOẠI', '#SỐ TIỀN'], recent.map(t => tr([dmy(t.date), KN[t.kind], '#' + `<span class="${inc(t) ? '' : ''}">${inc(t) ? '+' : t.src == 'debt' ? '' : '−'}${fmt(t.amount)}</span>`])), 'Chưa có giao dịch.')}</div></div>`;
 }
+const RANGES = [['3', '3 THÁNG'], ['6', '6 THÁNG'], ['12', '12 THÁNG'], ['0', 'TẤT CẢ']];
+ui.f = { range: '6', acc: 'all', cat: 'all' };
+const selF = (opts, cur, key) => `<select onchange="ui.f.${key}=this.value;render()">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v == cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
 function pgDb() {
-  const c = calc(S), p = project(S, ui.fcDate), months = [];
-  for (let i = 5; i >= 0; i--) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i); months.push(d.toISOString().slice(0, 7)); }
-  const inc = months.map(m => sum(S.tx.filter(t => (t.kind == 'ti' || t.kind == 'tp') && t.date.startsWith(m)), t => t.amount));
-  const exp = months.map(m => sum(S.tx.filter(t => (t.kind == 'ci' || t.kind == 'cp') && t.date.startsWith(m)), t => t.amount));
-  const mx = Math.max(1, ...inc, ...exp), H = 160;
-  const bars = months.map((m, i) => { const x = 20 + i * 90, h1 = inc[i] / mx * H, h2 = exp[i] / mx * H; return `<rect x="${x}" y="${H + 10 - h1}" width="30" height="${h1}" fill="#000"/><rect x="${x + 34}" y="${H + 10 - h2}" width="30" height="${h2}" fill="#fff" stroke="#000"/><text x="${x + 32}" y="${H + 28}" font-size="11" text-anchor="middle" fill="#6b6b6b">${m.slice(5)}/${m.slice(2, 4)}</text>`; }).join('');
-  const cats = {}; S.tx.filter(t => t.kind == 'ci' || t.kind == 'cp').forEach(t => cats[t.cat] = (cats[t.cat] || 0) + t.amount);
-  const cl = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 6), cm = cl[0]?.[1] || 1;
-  const tot = Math.max(c.total, c.da, 1);
-  const bar = (l, v, w) => `<div style="margin:10px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${l}</span><b>${fmt(v)}</b></div><div style="height:8px;background:var(--soft);border-radius:4px;margin-top:4px"><div style="height:8px;width:${Math.max(0, v) / w * 100}%;background:#000;border-radius:4px;transition:.4s"></div></div></div>`;
+  const c = calc(S), p = project(S, ui.fcDate), f = ui.f, flow = S.tx.filter(t => ['ci', 'cp', 'ti', 'tp'].includes(t.kind));
+  const key = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), now = new Date();
+  let n = +f.range; if (!n) { const first = flow.map(t => t.date).sort()[0]; n = first ? Math.min(24, Math.max(3, (now.getFullYear() - +first.slice(0, 4)) * 12 + now.getMonth() - +first.slice(5, 7) + 2)) : 6; }
+  const months = Array.from({ length: n }, (_, i) => key(new Date(now.getFullYear(), now.getMonth() - (n - 1 - i), 1))), from = months[0] + '-01';
+  const rows = flow.filter(t => t.date >= from && (f.acc == 'all' || (f.acc == 'debt' ? t.src == 'debt' : t.acc == f.acc && t.src != 'debt')) && (f.cat == 'all' || t.cat == f.cat));
+  const isI = t => t.kind[0] == 't', I = rows.filter(isI), E = rows.filter(t => !isI(t));
+  const inc = months.map(m => sum(I.filter(t => t.date.startsWith(m)), t => t.amount)), exp = months.map(m => sum(E.filter(t => t.date.startsWith(m)), t => t.amount));
+  const mx = Math.max(1, ...inc, ...exp), H = 170, W = 1000, slot = (W - 20) / n, bw = Math.min(34, slot * .3);
+  const bars = months.map((m, i) => { const x = 10 + i * slot + slot / 2 - bw - 2, h1 = inc[i] / mx * H, h2 = exp[i] / mx * H; return `<rect x="${x}" y="${H + 10 - h1}" width="${bw}" height="${h1}" fill="#000"/><rect x="${x + bw + 4}" y="${H + 10 - h2}" width="${bw}" height="${h2}" fill="#fff" stroke="#000" stroke-width="2"/><text x="${x + bw + 2}" y="${H + 28}" font-size="12" text-anchor="middle" fill="#6b6b6b">${m.slice(5)}/${m.slice(2, 4)}</text>`; }).join('');
+  const grp = L => { const o = {}; L.forEach(t => o[t.cat] = (o[t.cat] || 0) + t.amount); return Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 6); };
+  const bar = (l, v, w) => `<div style="margin:12px 0"><div style="display:flex;justify-content:space-between;font-size:12px;gap:8px"><span>${l}</span><b>${fmt(v)}</b></div><div style="height:8px;background:var(--soft);margin-top:5px"><div style="height:8px;width:${Math.max(0, v) / w * 100}%;background:#000;transition:width .5s var(--ease)"></div></div></div>`;
+  const list = (L, e) => L.length ? L.map(([k, v]) => bar(esc(k), v, L[0][1])).join('') : '<div class="empty">Không có dữ liệu.</div>';
+  const tot = Math.max(c.total, c.da, 1), allCats = [...new Set([...S.cats.exp, ...S.cats.inc])];
   return `<div class="hero"><small>TÀI SẢN RÒNG</small><div class="big">${money(c.net)}</div></div>${p.has ? `<div class="sec">DỰ KIẾN ${dmy(ui.fcDate)}: <b>${money(p.net)}</b></div>` : ''}
-  <div class="cols"><div><h2>DƯ VÀ NỢ</h2>${bar('Tổng dư', c.total, tot)}${bar('Nợ thực tế', c.da, tot)}</div>
-  <div><h2>CHI THEO DANH MỤC</h2>${cl.length ? cl.map(([k, v]) => bar(esc(k), v, cm)).join('') : '<div class="empty">Chưa có chi tiêu.</div>'}</div></div>
-  <h2>THU / CHI 6 THÁNG · ■ THU □ CHI</h2><div class="wrap"><svg viewBox="0 0 560 ${H + 40}" style="width:100%;min-width:480px"><line x1="10" x2="550" y1="${H + 10}" y2="${H + 10}" stroke="#000"/>${bars}</svg></div>`;
+  <div class="filters"><span class="fl">BỘ LỌC</span><div class="bar chips" style="margin:0">${RANGES.map(([v, l]) => `<button class="${f.range == v ? 'on' : ''}" onclick="ui.f.range='${v}';render()">${l}</button>`).join('')}</div>
+  ${selF([['all', 'TẤT CẢ TÀI KHOẢN'], ...accOpts(), ['debt', 'NGUỒN NỢ']], f.acc, 'acc')}${selF([['all', 'TẤT CẢ DANH MỤC'], ...allCats.map(c => [c, c])], f.cat, 'cat')}
+  <button class="g s" onclick="ui.f={range:'6',acc:'all',cat:'all'};render()">ĐẶT LẠI</button></div>
+  <div class="grid">${kpi('THU', money(sum(I, t => t.amount)), 'in')}${kpi('CHI', money(sum(E, t => t.amount)), 'out')}${kpi('CHÊNH LỆCH', money(sum(I, t => t.amount) - sum(E, t => t.amount)))}${kpi('SỐ GIAO DỊCH', rows.length)}</div>
+  <div class="cols3"><div><h2>DƯ VÀ NỢ</h2>${bar('Tổng dư', c.total, tot)}${bar('Nợ thực tế', c.da, tot)}${bar('Tiền mặt', c.cash, tot)}${bar('Ngân hàng', c.bank, tot)}</div>
+  <div><h2>CHI THEO DANH MỤC</h2>${list(grp(E))}</div><div><h2>THU THEO DANH MỤC</h2>${list(grp(I))}</div></div>
+  <h2>THU / CHI THEO THÁNG · ■ THU □ CHI</h2><div class="wrap"><svg viewBox="0 0 ${W} ${H + 40}" style="width:100%;min-width:520px"><line x1="0" x2="${W}" y1="${H + 10}" y2="${H + 10}" stroke="#000" stroke-width="2"/>${bars}</svg></div>`;
 }
 const noGroup = (t, title) => {
   const rows = calc(S).debts.filter(x => x.d.type == t).map(x => tr([esc(x.d.name) + (x.d.info ? `<br><small>${esc(x.d.info)}</small>` : '') + ` <small>#${x.d.id.slice(-4)}</small>`, '#' + (x.d.rate || 0) + '%', '#' + fmt(x.p), '#' + fmt(x.x), '#<b>' + fmt(x.a) + '</b>',
@@ -143,7 +177,7 @@ function calcInt(id) {
   }, { rate: d.rate, to: today() });
 }
 function pgBd() {
-  const chips = `<div class="bar chips">${BD.map(([k, l]) => `<button class="${ui.bd == k ? 'on' : ''}" onclick="ui.bd='${k}';render()">${l}</button>`).join('')}</div>`, k = ui.bd;
+  const chips = `<div class="bar chips">${BD.map(([k, l]) => `<button class="${ui.bd == k ? 'on' : ''}" onclick="ui.bd='${k}';render()">${ico({ ci: 'out', cp: 'out', lend: 'out', ti: 'in', tp: 'in', tv: 'in' }[k])}${l}</button>`).join('')}</div>`, k = ui.bd;
   let body;
   if (k == 'ci') {
     const L = byDate(S.tx.filter(t => t.kind == 'ci')), ds = [...new Set(L.map(t => t.date))];
@@ -210,8 +244,19 @@ function pgDm() {
 }
 const addCat = t => { const v = document.getElementById('nc-' + t).value.trim(); if (!v) return; if (S.cats[t].some(c => c.toLowerCase() == v.toLowerCase())) return alert('Danh mục đã tồn tại.'); S.cats[t].push(v); save(); render(); };
 const delCat = (t, i) => { S.cats[t].splice(i, 1); save(); render(); };
-const pgCn = () => `<div style="max-width:420px"><label>TÊN HIỂN THỊ</label><input id="pn" value="${esc(S.profile.name)}"><label>GHI CHÚ</label><textarea id="pt" rows="3">${esc(S.profile.note)}</textarea><div class="row" style="justify-content:flex-start">${btn('LƯU', 'saveProfile()', '')}</div></div>`;
-const saveProfile = () => { S.profile.name = pn.value.trim(); S.profile.note = pt.value.trim(); save(); alert('Đã lưu.'); };
+const pgCn = () => { const pr = S.profile, cv = safeImg(pr.cover), av = safeImg(pr.avatar); return `<div class="cols"><div>
+  <h2>ẢNH BÌA</h2><div class="cover" style="height:150px;${cv ? `background-image:url(${cv})` : ''}">${cv ? '' : deco}</div>
+  <div class="bar" style="margin-top:14px"><label class="btn">TẢI ẢNH BÌA<input type="file" accept="image/*" hidden onchange="upImg(this,'cover',1200,420)"></label>${cv ? btn('GỠ ẢNH', "rmImg('cover')") : ''}</div>
+  <h2>ẢNH ĐẠI DIỆN</h2><div class="avatar"><div>${av ? `<img src="${av}" alt="">` : esc((pr.name || 'N')[0].toUpperCase())}</div></div>
+  <div class="bar" style="margin-top:14px"><label class="btn">TẢI ẢNH ĐẠI DIỆN<input type="file" accept="image/*" hidden onchange="upImg(this,'avatar',320,320)"></label>${av ? btn('GỠ ẢNH', "rmImg('avatar')") : ''}</div></div>
+  <div><h2>THÔNG TIN</h2><label>TÊN HIỂN THỊ</label><input id="pn" value="${esc(pr.name)}"><label>GHI CHÚ</label><textarea id="pt" rows="4">${esc(pr.note)}</textarea><div class="row" style="justify-content:flex-start">${btn('LƯU', 'saveProfile()', '')}</div></div></div>`; };
+const saveProfile = () => { S.profile.name = pn.value.trim(); S.profile.note = pt.value.trim(); save(); render(); };
+function upImg(inp, key, w, h) {
+  const f = inp.files[0]; inp.value = ''; if (!f) return; if (!/^image\//.test(f.type)) return alert('Vui lòng chọn file ảnh.');
+  const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const k = Math.max(w / im.width, h / im.height), dw = im.width * k, dh = im.height * k; c.getContext('2d').drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh); S.profile[key] = c.toDataURL('image/jpeg', .82); save(); render(); }; im.onerror = () => alert('Không đọc được ảnh.'); im.src = r.result; };
+  r.readAsDataURL(f);
+}
+const rmImg = key => { delete S.profile[key]; save(); render(); };
 const pgSl = () => `<div class="bar">${btn('TẢI BẢN SAO LƯU (.json)', 'backup()', '')} <label class="btn g" style="margin:0;color:#000;background:#fff;border-color:#ccc">KHÔI PHỤC TỪ FILE<input type="file" accept=".json,application/json" hidden onchange="restore(this)"></label></div><p class="empty">Dữ liệu chỉ được lưu trong trình duyệt này. Hãy sao lưu định kỳ.</p>`;
 function backup() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' })); a.download = `nomoney-nolife-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1e3); }
 function restore(inp) {
@@ -223,8 +268,11 @@ function restore(inp) {
 const PG = { 'home/tq': pgTq, 'home/db': pgDb, 'fin/no': pgNo, 'fin/bd': pgBd, 'fin/du': pgDu, 'fc/no': pgFcNo, 'fc/bd': pgFcBd, 'fc/du': pgFcDu, 'set/dm': pgDm, 'set/cn': pgCn, 'set/sl': pgSl };
 function render() {
   let [m, s] = location.hash.slice(1).split('/'); if (!PG[m + '/' + s]) { m = 'home'; s = 'tq'; }
-  nav.innerHTML = Object.entries(NAV).map(([k, [l, subs]]) => `<a href="#${k}/${subs[0][0]}" class="${k == m ? 'on' : ''}">${l}</a>`).join('');
-  sub.innerHTML = NAV[m][1].map(([k, l]) => `<a href="#${m}/${k}" class="${k == s ? 'on' : ''}">${l}</a>`).join('');
-  app.innerHTML = PG[m + '/' + s]();
+  const p = S.profile, av = safeImg(p.avatar);
+  side.innerHTML = `<div class="logo">NOMONEY<i>-</i>NOLIFE</div><div class="me"><div class="av">${av ? `<img src="${av}" alt="">` : esc((p.name || 'N')[0].toUpperCase())}</div>${esc((p.name || 'NGƯỜI DÙNG').toUpperCase())}</div>` +
+    Object.entries(NAV).map(([k, [l, subs]]) => `<div class="gl">${l}</div>` + subs.map(([a, b]) => `<a class="lk ${k == m && a == s ? 'on' : ''}" href="#${k}/${a}"><span>${b}</span></a>`).join('')).join('') + '<div class="slashes"></div>';
+  app.innerHTML = PG[m + '/' + s](); enhance(app);
+  const key = m + s + (m == 'fin' && s == 'bd' ? ui.bd : '');
+  if (key != ui.key) { ui.key = key; app.classList.remove('in'); void app.offsetWidth; app.classList.add('in'); scrollTo(0, 0); }
 }
 addEventListener('hashchange', render); render();
